@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Like App</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --card: #f4f5f7;
+    --text: #1a1a1a;
+    --muted: #666b75;
+    --border: #d9dce1;
+    --accent: #cc0000;
+    --accent-text: #ffffff;
+    --ok: #1a7f37;
+    --err: #c62828;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121212;
+      --card: #1e1e22;
+      --text: #ececec;
+      --muted: #9aa0a9;
+      --border: #34363c;
+      --accent: #ff4e45;
+      --accent-text: #121212;
+      --ok: #4cc26b;
+      --err: #ff6b6b;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  p.sub { margin: 0 0 16px; color: var(--muted); font-size: 0.9rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    flex: 1 1 140px;
+    padding: 12px 14px;
+    font-size: 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button.primary {
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  textarea {
+    width: 100%;
+    min-height: 160px;
+    padding: 10px;
+    font-size: 0.95rem;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    resize: vertical;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  #status { font-size: 0.9rem; color: var(--muted); margin-top: 10px; }
+  #summary { font-weight: 700; margin-top: 10px; }
+  ul#log { list-style: none; margin: 10px 0 0; padding: 0; }
+  ul#log li {
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    font-size: 0.88rem;
+    word-break: break-all;
+  }
+  .ok { color: var(--ok); }
+  .err { color: var(--err); }
+  .pending { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>YouTube Like App</h1>
+  <p class="sub">Likes videos for the Google account you sign in with.</p>
+
+  <div class="card">
+    <div class="row">
+      <button id="signInBtn" class="primary" type="button">Sign in with Google</button>
+      <button id="likeBtn" type="button" disabled>Like all videos</button>
+    </div>
+    <div id="status">Not signed in.</div>
+  </div>
+
+  <div class="card">
+    <label for="links">Paste YouTube links (one per line)</label>
+    <textarea id="links" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/...&#10;https://www.youtube.com/shorts/..."></textarea>
+    <div id="summary"></div>
+    <ul id="log"></ul>
+  </div>
+</div>
+
+<script>
+  // Put your OAuth Client ID here
+  const CLIENT_ID = "1091487239681-tirr9h43mcp5sa56gqe75f6vosbbvi46.apps.googleusercontent.com";
+  const SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl";
+  const DELAY_MS = 1000;
+
+  let tokenClient = null;
+  let accessToken = null;
+  let running = false;
+
+  const signInBtn = document.getElementById("signInBtn");
+  const likeBtn = document.getElementById("likeBtn");
+  const statusEl = document.getElementById("status");
+  const summaryEl = document.getElementById("summary");
+  const logEl = document.getElementById("log");
+  const linksEl = document.getElementById("links");
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function initGoogle() {
+    if (!window.google || !google.accounts || !google.accounts.oauth2) {
+      setStatus("Google sign-in failed to load. Check your connection and reload.");
+      return;
+    }
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPE,
+      callback: function (resp) {
+        if (resp && resp.access_token) {
+          accessToken = resp.access_token;
+          likeBtn.disabled = false;
+          setStatus("Signed in. Paste links and tap \"Like all videos\".");
+        } else {
+          setStatus("Sign-in failed: " + ((resp && (resp.error_description || resp.error)) || "unknown error"));
+        }
+      },
+      error_callback: function (err) {
+        setStatus("Sign-in error: " + ((err && (err.message || err.type)) || "unknown error"));
+      }
+    });
+    setStatus("Not signed in.");
+  }
+
+  function extractId(line) {
+    var raw = line.trim();
+    if (!raw) return null;
+    if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+    if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw;
+    var url;
+    try { url = new URL(raw); } catch (e) { return null; }
+    var host = url.hostname.replace(/^www\.|^m\.|^music\./, "").toLowerCase();
+    var id = null;
+    if (host === "youtu.be") {
+      id = url.pathname.split("/").filter(Boolean)[0];
+    } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      if (url.pathname === "/watch") {
+        id = url.searchParams.get("v");
+      } else {
+        var m = url.pathname.match(/^\/(shorts|embed|live|v)\/([^/?#]+)/);
+        if (m) id = m[2];
+      }
+    }
+    return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+  }
+
+  function addLog(text, cls) {
+    var li = document.createElement("li");
+    li.className = cls;
+    li.textContent = text;
+    logEl.appendChild(li);
+    return li;
+  }
+
+  function setLog(li, text, cls) {
+    li.textContent = text;
+    li.className = cls;
+  }
+
+  async function likeVideo(id) {
+    var res = await fetch(
+      "https://www.googleapis.com/youtube/v3/videos/rate?id=" +
+        encodeURIComponent(id) + "&rating=like",
+      { method: "POST", headers: { Authorization: "Bearer " + accessToken } }
+    );
+    if (res.status === 204) return { ok: true };
+    var reason = "";
+    try {
+      var data = await res.json();
+      reason = (data.error && data.error.errors && data.error.errors[0] && data.error.errors[0].reason) || "";
+    } catch (e) {}
+    return { ok: false, status: res.status, reason: reason };
+  }
+
+  async function likeAll() {
+    if (running) return;
+    if (!accessToken) { setStatus("Please sign in first."); return; }
+
+    var lines = linksEl.value.split(/\r?\n/);
+    var seen = {};
+    var ids = [];
+    var invalid = 0;
+    lines.forEach(function (line) {
+      if (!line.trim()) return;
+      var id = extractId(line);
+      if (!id) { invalid++; return; }
+      if (!seen[id]) { seen[id] = true; ids.push(id); }
+    });
+
+    logEl.textContent = "";
+    summaryEl.textContent = "";
+
+    if (ids.length === 0) {
+      setStatus("No valid YouTube links found.");
+      return;
+    }
+
+    running = true;
+    likeBtn.disabled = true;
+    signInBtn.disabled = true;
+
+    var liked = 0;
+    var stopped = false;
+
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      setStatus("Processing " + (i + 1) + " of " + ids.length + "...");
+      var li = addLog((i + 1) + ". " + id + " - working...", "pending");
+      var result;
+      try {
+        result = await likeVideo(id);
+      } catch (e) {
+        setLog(li, (i + 1) + ". " + id + " - network error", "err");
+        if (i < ids.length - 1) await sleep(DELAY_MS);
+        continue;
+      }
+
+      if (result.ok) {
+        liked++;
+        setLog(li, (i + 1) + ". " + id + " - liked", "ok");
+      } else if (result.status === 401) {
+        setLog(li, (i + 1) + ". " + id + " - session expired, sign in again", "err");
+        accessToken = null;
+        stopped = true;
+        break;
+      } else if (result.status === 403) {
+        var quota = result.reason === "quotaExceeded" || result.reason === "rateLimitExceeded" || result.reason === "dailyLimitExceeded";
+        setLog(li, (i + 1) + ". " + id + " - " + (quota ? "daily quota reached" : "permission denied or daily quota reached"), "err");
+        if (quota) { stopped = true; break; }
+      } else if (result.status === 404) {
+        setLog(li, (i + 1) + ". " + id + " - video not found", "err");
+      } else {
+        setLog(li, (i + 1) + ". " + id + " - error " + result.status + (result.reason ? " (" + result.reason + ")" : ""), "err");
+      }
+
+      if (i < ids.length - 1) await sleep(DELAY_MS);
+    }
+
+    var msg = "Done: " + liked + "/" + ids.length + " liked";
+    if (invalid) msg += " (" + invalid + " invalid line" + (invalid > 1 ? "s" : "") + " skipped)";
+    if (stopped) msg += " - stopped early";
+    summaryEl.textContent = msg;
+
+    running = false;
+    signInBtn.disabled = false;
+    likeBtn.disabled = !accessToken;
+    setStatus(accessToken ? "Signed in." : "Session ended. Please sign in again.");
+  }
+
+  signInBtn.addEventListener("click", function () {
+    if (!tokenClient) { setStatus("Google sign-in is not ready yet."); return; }
+    tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+  });
+  likeBtn.addEventListener("click", likeAll);
+
+  var s = document.createElement("script");
+  s.src = "https://accounts.google.com/gsi/client";
+  s.async = true;
+  s.defer = true;
+  s.onload = initGoogle;
+  s.onerror = function () { setStatus("Could not load Google sign-in script."); };
+  document.head.appendChild(s);
+</script>
+</body>
+</html>
